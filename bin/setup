@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# Local Legal OS — one-shot setup.
+#
+# Run from the local-app/ directory:  ./bin/setup
+# Or from anywhere:                   bash /path/to/local-app/bin/setup
+#
+# Idempotent. Each step checks whether the tool/model/service is already in
+# place before doing anything. Re-run any time to repair the install.
+
+set -u
+
+# ----- helpers -----
+BOLD=$(tput bold 2>/dev/null || echo "")
+DIM=$(tput dim 2>/dev/null || echo "")
+GREEN=$(tput setaf 2 2>/dev/null || echo "")
+YELLOW=$(tput setaf 3 2>/dev/null || echo "")
+RED=$(tput setaf 1 2>/dev/null || echo "")
+BLUE=$(tput setaf 4 2>/dev/null || echo "")
+RESET=$(tput sgr0 2>/dev/null || echo "")
+
+step()   { printf "\n%s==>%s %s%s%s\n" "$BLUE" "$RESET" "$BOLD" "$1" "$RESET"; }
+ok()     { printf "  %s✓%s %s\n" "$GREEN" "$RESET" "$1"; }
+warn()   { printf "  %s!%s %s\n" "$YELLOW" "$RESET" "$1"; }
+fail()   { printf "  %s✗%s %s\n" "$RED" "$RESET" "$1"; }
+info()   { printf "  %s%s%s\n" "$DIM" "$1" "$RESET"; }
+
+# Locate ourselves and cd into the app root.
+SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+APP_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
+cd "$APP_DIR" || exit 1
+
+# ----- platform -----
+step "1/9  Platform check"
+OS="$(uname -s)"
+if [ "$OS" != "Darwin" ] && [ "$OS" != "Linux" ]; then
+  fail "Only macOS and Linux are supported. (got $OS)"
+  exit 1
+fi
+ok "$OS detected"
+
+# ----- Homebrew (macOS) -----
+step "2/9  Homebrew"
+if [ "$OS" = "Darwin" ]; then
+  if command -v brew >/dev/null 2>&1; then
+    ok "Homebrew installed"
+  else
+    warn "Homebrew not found — installing"
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || {
+      fail "Homebrew install failed. Install manually from https://brew.sh, then re-run."
+      exit 1
+    }
+    ok "Homebrew installed"
+  fi
+else
+  info "Linux — skipping Homebrew. Use your distro's package manager for ollama, supabase, docker."
+fi
+
+# ----- Node + pnpm -----
+step "3/9  Node + pnpm"
+if ! command -v node >/dev/null 2>&1; then
+  warn "Node not found"
+  if [ "$OS" = "Darwin" ]; then brew install node && ok "Node installed"; else
+    fail "Install Node 20+ manually and re-run."
+    exit 1
+  fi
+else
+  NODE_VER=$(node -v | sed 's/v//' | cut -d. -f1)
+  if [ "$NODE_VER" -lt 20 ]; then
+    fail "Node $(node -v) is too old. Upgrade to 20+ and re-run."
+    exit 1
+  fi
+  ok "node $(node -v)"
+fi
+
+if ! command -v pnpm >/dev/null 2>&1; then
+  warn "pnpm not found — enabling via corepack"
+  corepack enable 2>/dev/null || true
+  corepack prepare pnpm@latest --activate 2>/dev/null || true
+  if ! command -v pnpm >/dev/null 2>&1; then
+    [ "$OS" = "Darwin" ] && brew install pnpm
+  fi
+fi
+command -v pnpm >/dev/null 2>&1 && ok "pnpm $(pnpm -v)" || { fail "pnpm install failed"; exit 1; }
+
+# ----- Ollama -----
+step "4/9  Ollama (local model runtime)"
+if command -v ollama >/dev/null 2>&1; then
+  ok "ollama installed"
+else
+  [ "$OS" = "Darwin" ] && brew install ollama || {
+    fail "Install ollama manually: https://ollama.com/download"
+    exit 1
+  }
+  ok "ollama installed"
+fi
+
+# Start ollama
+if curl -fs http://localhost:11434/api/tags >/dev/null 2>&1; then
+  ok "ollama service running"
+else
+  if [ "$OS" = "Darwin" ]; then
+    brew services start ollama >/dev/null && info "starting ollama service"
+  else
+    nohup ollama serve >/dev/null 2>&1 &
+  fi
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    if curl -fs http://localhost:11434/api/tags >/dev/null 2>&1; then
+      ok "ollama service running"
+      break
+    fi
+  done
+  curl -fs http://localhost:11434/api/tags >/dev/null 2>&1 || warn "ollama not responding yet — continuing"
+fi
+
+# ----- Models -----
+step "5/9  Language models"
+CHAT_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
+EMBED_MODEL="${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
+
+pull_if_missing() {
+  local m="$1"
+  if ollama list 2>/dev/null | awk '{print $1}' | grep -q "^${m%%:*}"; then
+    ok "$m already pulled"
+  else
+    info "Pulling $m (this can take a few minutes)…"
+    if ollama pull "$m"; then
+      ok "$m pulled"
+    else
+      warn "Failed to pull $m — try again later via Settings → System health"
+    fi
+  fi
+}
+pull_if_missing "$CHAT_MODEL"
+pull_if_missing "$EMBED_MODEL"
+
+# ----- Tesseract (optional OCR) -----
+step "6/9  Tesseract OCR (optional)"
+if command -v tesseract >/dev/null 2>&1; then
+  ok "tesseract installed ($(tesseract --version 2>&1 | head -1))"
+else
+  if [ "$OS" = "Darwin" ]; then
+    brew install tesseract && ok "tesseract installed" || warn "tesseract install failed (OCR will be disabled)"
+  else
+    warn "Install tesseract via your package manager to enable OCR on scanned files."
+  fi
+fi
+
+# ----- Supabase CLI -----
+step "7/9  Supabase CLI"
+if command -v supabase >/dev/null 2>&1; then
+  ok "supabase $(supabase --version | head -1)"
+else
+  if [ "$OS" = "Darwin" ]; then
+    brew install supabase/tap/supabase && ok "supabase CLI installed"
+  else
+    warn "Install supabase CLI manually: https://supabase.com/docs/guides/local-development/cli/getting-started"
+  fi
+fi
+
+# ----- Docker -----
+step "8/9  Docker"
+if docker info >/dev/null 2>&1; then
+  ok "docker daemon running"
+elif command -v docker >/dev/null 2>&1; then
+  warn "docker installed but daemon not running"
+  if [ "$OS" = "Darwin" ] && [ -d "/Applications/Docker.app" ]; then
+    info "Starting Docker Desktop…"
+    open -a Docker 2>/dev/null || open /Applications/Docker.app
+    info "Waiting up to 60s for docker daemon…"
+    for _ in $(seq 1 30); do
+      if docker info >/dev/null 2>&1; then ok "docker daemon running"; break; fi
+      sleep 2
+    done
+    docker info >/dev/null 2>&1 || warn "Docker not ready yet. Open Docker Desktop and accept any prompts, then re-run setup."
+  fi
+else
+  warn "Docker not installed. Install requires your sudo password:"
+  echo
+  echo "    ${BOLD}brew install --cask docker${RESET}"
+  echo
+  echo "  Then open Docker Desktop once and re-run this script. (Supabase needs Docker.)"
+  echo "  Skipping Supabase setup for now — the app works without it, semantic search will be disabled."
+fi
+
+# ----- Project deps + Supabase + env -----
+step "9/9  App dependencies and database"
+if [ -d node_modules ]; then
+  ok "pnpm dependencies installed"
+else
+  info "Installing pnpm dependencies…"
+  pnpm install --silent && ok "pnpm install complete"
+fi
+
+# Bring up Supabase if Docker is available
+if docker info >/dev/null 2>&1 && command -v supabase >/dev/null 2>&1; then
+  if supabase status >/dev/null 2>&1; then
+    ok "supabase already running"
+  else
+    info "Starting supabase (first run pulls container images — a few minutes)…"
+    supabase start || warn "supabase start failed — re-run later from Settings → System health"
+  fi
+
+  # Capture keys
+  if supabase status >/dev/null 2>&1; then
+    URL=$(supabase status -o env 2>/dev/null | awk -F= '/^API_URL=/{print $2}' | tr -d '"')
+    SECRET=$(supabase status -o env 2>/dev/null | awk -F= '/^SERVICE_ROLE_KEY=/{print $2}' | tr -d '"')
+    # Newer CLIs emit different env keys
+    [ -z "$SECRET" ] && SECRET=$(supabase status 2>/dev/null | awk '/Secret/{print $3}' | head -1)
+    [ -z "$URL" ] && URL="http://127.0.0.1:54321"
+
+    ENV_FILE="$APP_DIR/.env.local"
+    touch "$ENV_FILE"
+    # Replace or append SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+    tmp=$(mktemp)
+    grep -vE "^(SUPABASE_URL|SUPABASE_SERVICE_ROLE_KEY)=" "$ENV_FILE" > "$tmp" || true
+    {
+      cat "$tmp"
+      echo "SUPABASE_URL=$URL"
+      echo "SUPABASE_SERVICE_ROLE_KEY=$SECRET"
+    } > "$ENV_FILE"
+    rm "$tmp"
+    ok "Supabase keys written to .env.local"
+
+    # Apply migrations
+    if supabase migration up --local >/dev/null 2>&1; then
+      ok "database migrations applied"
+    else
+      warn "Migrations may not have applied — run 'supabase migration up --local' manually if needed."
+    fi
+  fi
+else
+  warn "Supabase skipped — semantic search will be off until you fix Docker + supabase and re-run setup."
+fi
+
+# ----- Done -----
+echo
+echo "${BOLD}${GREEN}✓ Local Legal OS is ready.${RESET}"
+echo
+echo "  Start the app:  ${BOLD}pnpm dev${RESET}"
+echo "  Then open:      ${BOLD}http://localhost:3000${RESET}"
+echo
+echo "  Configure or repair anything later from the in-app Settings page."
+echo
