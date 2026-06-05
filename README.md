@@ -5,6 +5,14 @@ the firm's own hardware. The assistant can answer questions about the firm's
 documents (PDF, DOCX, XLSX, images via OCR, plain text), and take real action
 on them — read, write, edit, organize — the same way Claude Code does.
 
+> **New here / not technical?** Follow the plain-English, step-by-step
+> **[Setup Guide (SETUP.md)](SETUP.md)** — it walks you from downloading the
+> code to a running app with no coding experience required.
+
+> **Platform:** macOS only. Linux works for development but is untested for
+> non-technical setup, and PDF generation relies on a macOS-only tool.
+> **Windows is not supported.**
+
 ## Quick start
 
 The setup script does everything: installs Ollama, Supabase, Docker (where it

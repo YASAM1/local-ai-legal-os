@@ -2,6 +2,9 @@ import { tool } from "ai";
 import { z } from "zod";
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
+import crypto from "node:crypto";
+import { execFile } from "node:child_process";
 import {
   ensureWorkspace,
   resolveWithinWorkspace,
@@ -19,6 +22,90 @@ async function statSafe(p: string) {
   } catch {
     return null;
   }
+}
+
+// cupsfilter's text filter hard-wraps at a fixed column (~80) by CHARACTER,
+// which slices through words. We word-wrap below that width ourselves so its
+// filter never has to break a line — wrapping narrower than its column count is
+// always safe; only wrapping wider would re-introduce mid-word breaks.
+const PDF_WRAP_COLS = 78;
+
+/** Word-wrap a single logical line to `width` columns, breaking only at spaces. */
+function wrapLine(line: string, width: number): string {
+  if (line.length <= width) return line;
+  const words = line.split(/\s+/);
+  const out: string[] = [];
+  let cur = "";
+  for (const w of words) {
+    if (!cur) {
+      cur = w;
+    } else if (cur.length + 1 + w.length <= width) {
+      cur += " " + w;
+    } else {
+      out.push(cur);
+      cur = w;
+    }
+    // A single token longer than the width (e.g. a URL) is hard-split so it
+    // can't overflow into cupsfilter's own wrapper.
+    while (cur.length > width) {
+      out.push(cur.slice(0, width));
+      cur = cur.slice(width);
+    }
+  }
+  if (cur) out.push(cur);
+  return out.join("\n");
+}
+
+/**
+ * Strip the most common Markdown markers and word-wrap the result so the
+ * rendered PDF reads as clean prose instead of showing raw `#`, `**`, and
+ * backtick characters or breaking words mid-line. cupsfilter renders plain
+ * text verbatim, so all flattening and wrapping happens here.
+ */
+function markdownToPlainText(md: string): string {
+  const flattened = md
+    .replace(/\r\n/g, "\n")
+    .replace(/^(#{1,6})\s+(.+)$/gm, (_m, h, txt) =>
+      // Top-level heading becomes an uppercase title; others stay as plain lines.
+      h.length === 1 ? String(txt).toUpperCase() : String(txt),
+    )
+    .replace(/\*\*(.+?)\*\*/g, "$1") // bold
+    .replace(/(^|[^*])\*(?!\s)(.+?)\*/g, "$1$2") // italic
+    .replace(/`([^`]+)`/g, "$1") // inline code
+    .replace(/^\s*>\s?/gm, "") // blockquote markers
+    .replace(/^\s*[-*+]\s+/gm, "  • ") // bullet lists
+    .trimEnd();
+
+  return flattened
+    .split("\n")
+    .map((line) => wrapLine(line, PDF_WRAP_COLS))
+    .join("\n");
+}
+
+/** Render a text file to PDF via the macOS-native cupsfilter. Returns PDF bytes. */
+function cupsfilterToPdf(txtPath: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "cupsfilter",
+      ["-i", "text/plain", txtPath],
+      { encoding: "buffer", maxBuffer: 50 * 1024 * 1024 },
+      (err, stdout) => {
+        // cupsfilter logs progress to stderr and may exit non-zero while still
+        // emitting a valid PDF; trust the output if it starts with %PDF.
+        const buf = stdout as unknown as Buffer;
+        if (buf && buf.length > 0 && buf.subarray(0, 4).toString() === "%PDF") {
+          resolve(buf);
+        } else {
+          reject(
+            new Error(
+              err?.message ||
+                "cupsfilter produced no PDF output (is this running on macOS?)",
+            ),
+          );
+        }
+      },
+    );
+  });
 }
 
 export const fileTools = {
@@ -186,6 +273,48 @@ export const fileTools = {
 
       await walk(start);
       return { ok: true, query, count: results.length, results };
+    },
+  }),
+
+  create_pdf: tool({
+    description:
+      "Generate a real PDF document inside the workspace from text or Markdown content. Use this whenever the user asks for a PDF (e.g. a memo, letter, or summary as a PDF). Renders fully locally via the macOS-native PDF engine — nothing leaves the machine.",
+    inputSchema: z.object({
+      path: z
+        .string()
+        .describe(
+          "Relative path inside the workspace for the output PDF, e.g. 'client_status_memo.pdf'. A '.pdf' extension is added if missing.",
+        ),
+      content: z
+        .string()
+        .describe(
+          "The document body as plain text or Markdown. Markdown headings, bold, and lists are flattened to clean prose in the PDF.",
+        ),
+    }),
+    execute: async ({ path: rel, content }) => {
+      await ensureWorkspace();
+      const withExt = rel.toLowerCase().endsWith(".pdf") ? rel : `${rel}.pdf`;
+      const abs = resolveWithinWorkspace(withExt);
+      const tmp = path.join(
+        os.tmpdir(),
+        `legal-os-${crypto.randomBytes(6).toString("hex")}.txt`,
+      );
+      try {
+        await fs.writeFile(tmp, markdownToPlainText(content), "utf8");
+        const pdf = await cupsfilterToPdf(tmp);
+        await fs.mkdir(path.dirname(abs), { recursive: true });
+        await fs.writeFile(abs, pdf);
+        return {
+          ok: true,
+          path: toRelative(abs),
+          bytes: pdf.length,
+          action: "pdf_created",
+        };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      } finally {
+        await fs.unlink(tmp).catch(() => {});
+      }
     },
   }),
 };

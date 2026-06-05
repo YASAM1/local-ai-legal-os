@@ -18,7 +18,8 @@ Workspace:
 Tools:
 - list_files(dir): browse folders.
 - read_file(path): read a document. Extracts text from PDF, DOCX, XLSX, HTML, RTF, CSV, plain text, and (with OCR installed) images. The result includes 'kind', 'pageCount', and any extraction 'warnings'.
-- write_file(path, content): create or overwrite a text-format file. (Do not use to create binary files like PDFs.)
+- write_file(path, content): create or overwrite a text-format file. (Do not use to create binary files like PDFs — use create_pdf for those.)
+- create_pdf(path, content): generate a real PDF document from text or Markdown, rendered locally. Use this whenever the user asks for output "as a PDF".
 - edit_file(path, old_string, new_string): targeted edit of a text file. old_string must match exactly once. (Use on text files; for DOCX/PDF you'd need to draft a new file instead.)
 - delete_file(path): destructive. Confirm with the user first.
 - search_files(query, dir): substring search across plain-text files only. For PDFs and DOCX, prefer search_documents.
