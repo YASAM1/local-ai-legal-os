@@ -1,11 +1,13 @@
-# Packages whose install/build scripts pnpm is allowed to run.
-# esbuild ships a native binary that `tsx` (used by `pnpm ingest`) needs.
-onlyBuiltDependencies:
-  - esbuild
+# Build-script decisions for native/optional deps. esbuild is built (its
+# binary backs `tsx`); the rest are test-only or optional and skipped so a
+# fresh clone never needs a build toolchain.
+allowBuilds:
+  esbuild: true
+  msw: false
+  sharp: false
+  unrs-resolver: false
 
-# Packages whose build scripts are intentionally skipped — not needed to run
-# the app (msw is test-only; sharp/unrs-resolver are optional native builds).
-ignoredBuiltDependencies:
-  - msw
-  - sharp
-  - unrs-resolver
+# Don't re-run an install check before `pnpm dev`/scripts — it turns the
+# harmless "ignored build scripts" notice into a fatal error and blocks the
+# quickstart. ./bin/setup already installs deps.
+verifyDepsBeforeRun: false
