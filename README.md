@@ -23,7 +23,7 @@ when the app is ready.
 ```bash
 # 1. Clone
 git clone <this-repo>
-cd local-ai-legal-os/local-app
+cd local-ai-legal-os
 
 # 2. Run setup (idempotent — safe to re-run any time)
 ./bin/setup       # or: pnpm setup
