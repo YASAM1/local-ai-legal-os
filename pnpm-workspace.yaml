@@ -1,8 +1,11 @@
-allowBuilds:
-  esbuild: set this to true or false
-  msw: set this to true or false
-  sharp: set this to true or false
-  unrs-resolver: set this to true or false
+# Packages whose install/build scripts pnpm is allowed to run.
+# esbuild ships a native binary that `tsx` (used by `pnpm ingest`) needs.
+onlyBuiltDependencies:
+  - esbuild
+
+# Packages whose build scripts are intentionally skipped — not needed to run
+# the app (msw is test-only; sharp/unrs-resolver are optional native builds).
 ignoredBuiltDependencies:
+  - msw
   - sharp
   - unrs-resolver
